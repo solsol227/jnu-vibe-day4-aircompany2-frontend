@@ -380,7 +380,9 @@ async function ask(text) {
     }
     const tools = (data.toolCalls || []).map((c) =>
       `<span class="tool">🔧 ${esc(c.name)}(${esc(Object.values(c.args || {}).join(", "))})</span>`).join(" ");
-    wait.innerHTML = (tools ? tools + "<br>" : "") + mdLite(data.reply) + (data.model ? `<div class="tool" style="margin:6px 0 0">${esc(data.model)}</div>` : "");
+    const errs = (data.toolCalls || []).filter((c) => c.result?.error || c.result?.kakao_error)
+      .map((c) => `<div class="tool">⚠️ ${esc(c.name)}: ${esc(c.result.error || "")} ${esc(c.result.kakao_error || "")}</div>`).join("");
+    wait.innerHTML = (tools ? tools + "<br>" : "") + errs + mdLite(data.reply) + (data.model ? `<div class="tool" style="margin:6px 0 0">${esc(data.model)}</div>` : "");
     chatLog.push({ role: "model", text: data.reply });
     showSpots(data.toolCalls || []);
   } catch (e) {

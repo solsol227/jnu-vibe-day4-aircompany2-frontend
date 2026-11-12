@@ -41,6 +41,16 @@ module.exports = async (req, res) => {
     out.probes.push({ model: m, thinking: level || "off", ...(await probe(m, true)) });
   }
 
+  if (out.kakao_key_set) {
+    try {
+      const r = await fetch("https://dapi.kakao.com/v2/local/search/keyword.json?query=" + encodeURIComponent("제주") + "&size=1", {
+        headers: { Authorization: `KakaoAK ${(process.env.KAKAO_REST_API_KEY || "").trim()}` }, signal: AbortSignal.timeout(8000),
+      });
+      const d = await r.json().catch(() => ({}));
+      out.kakao_probe = { status: r.status, first: d.documents?.[0]?.place_name, error: d.message || d.errorType };
+    } catch (e) { out.kakao_probe = { status: "fail", error: e.name }; }
+  }
+
   try {
     const r = await fetch("https://generativelanguage.googleapis.com/v1beta/models?pageSize=200", {
       headers: { "x-goog-api-key": key }, signal: AbortSignal.timeout(8000),

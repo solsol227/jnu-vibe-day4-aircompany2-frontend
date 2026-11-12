@@ -2,13 +2,29 @@
 const UA = "weather-agent-demo/1.0";
 
 // ---------- 공통: 지명 → 좌표 (Open-Meteo 지오코딩) ----------
-const KAKAO_KEY = () => process.env.KAKAO_REST_API_KEY;
+const KAKAO_KEY = () => (process.env.KAKAO_REST_API_KEY || "").trim();
+let kakaoErr = null; // 마지막 카카오 호출 실패 이유 (도구 결과에 노출해 원인을 바로 볼 수 있게 함)
 const kakaoGet = async (path, params) => {
   const r = await fetch(`https://dapi.kakao.com/v2/local/search/${path}.json?${new URLSearchParams(params)}`, {
     headers: { Authorization: `KakaoAK ${KAKAO_KEY()}` }, signal: AbortSignal.timeout(8000),
   });
-  if (!r.ok) throw new Error(`Kakao ${r.status}`);
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    kakaoErr = `Kakao ${r.status}: ${body.message || body.errorType || ""}`.trim();
+    throw new Error(kakaoErr);
+  }
+  kakaoErr = null;
   return r.json();
+};
+
+// 카카오가 안 될 때를 대비한 한글 → 영문 지명 (Open-Meteo 지오코딩은 한글 검색이 약함)
+const ALIAS = {
+  서울: "Seoul", 부산: "Busan", 대구: "Daegu", 인천: "Incheon", 광주: "Gwangju", 대전: "Daejeon", 울산: "Ulsan",
+  세종: "Sejong", 수원: "Suwon", 성남: "Seongnam", 고양: "Goyang", 용인: "Yongin", 창원: "Changwon", 청주: "Cheongju",
+  천안: "Cheonan", 전주: "Jeonju", 포항: "Pohang", 제주: "Jeju", 서귀포: "Seogwipo", 춘천: "Chuncheon", 강릉: "Gangneung",
+  속초: "Sokcho", 원주: "Wonju", 목포: "Mokpo", 여수: "Yeosu", 순천: "Suncheon", 안동: "Andong", 경주: "Gyeongju",
+  김해: "Gimhae", 진주: "Jinju", 군산: "Gunsan", 평택: "Pyeongtaek", 울릉: "Ulleung", 독도: "Dokdo", 통영: "Tongyeong",
+  거제: "Geoje", 제주도: "Jeju", 제주시: "Jeju", 양양: "Yangyang", 가평: "Gapyeong", 남원: "Namwon", 담양: "Damyang",
 };
 
 async function geocode(location) {
@@ -19,7 +35,8 @@ async function geocode(location) {
       if (k) return { name: k.place_name, lat: +k.y, lon: +k.x };
     } catch { /* Open-Meteo로 폴백 */ }
   }
-  const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1&language=ko`;
+  const q = ALIAS[location.trim()] || location;
+  const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=1&language=ko`;
   const r = await fetch(url);
   const d = await r.json();
   const g = d.results?.[0];
@@ -50,7 +67,7 @@ const pmGrade = (kind, v) => {
 // ---------- Tool 1: get_weather ----------
 async function get_weather(args) {
   const p = await resolvePlace(args);
-  if (!p) return { error: `'${args.location}' 위치를 찾지 못했습니다. 다른 표기(한글↔영문)로 다시 시도하세요.` };
+  if (!p) return { error: `'${args.location}' 위치를 찾지 못했습니다. 다른 표기(한글↔영문)로 다시 시도하세요.`, kakao_error: kakaoErr || undefined };
 
   const w = await (await fetch(
     `https://api.open-meteo.com/v1/forecast?latitude=${p.lat}&longitude=${p.lon}` +
@@ -122,7 +139,7 @@ async function nominatimFallback(p, category, radius, limit) {
     })).sort((a, b) => a.distance_m - b.distance_m);
     return { center: p.name, category, radius_m: radius, count: spots.length, spots, source: "nominatim(fallback)" };
   } catch {
-    return { error: "장소 검색 서버가 응답하지 않습니다. 잠시 후 다시 시도하세요." };
+    return { error: "장소 검색 서버가 응답하지 않습니다. 잠시 후 다시 시도하세요.", kakao_error: kakaoErr || undefined };
   }
 }
 
@@ -147,7 +164,7 @@ async function find_spots(args) {
   const limit = Math.min(Math.max(Number(args.limit) || 6, 1), 10);
   const radius = Math.min(Math.max(Number(args.radius_m) || 5000, 500), 20000);
   const p = await resolvePlace(args);
-  if (!p) return { error: `'${args.location}' 위치를 찾지 못했습니다. 다른 표기(한글↔영문)로 다시 시도하세요.` };
+  if (!p) return { error: `'${args.location}' 위치를 찾지 못했습니다. 다른 표기(한글↔영문)로 다시 시도하세요.`, kakao_error: kakaoErr || undefined };
 
   if (KAKAO_KEY()) {
     const k = await kakaoSpots(p, category, radius, limit).catch(() => null);
@@ -164,12 +181,14 @@ async function find_spots(args) {
         body: "data=" + encodeURIComponent(q), signal: AbortSignal.timeout(9000),
       });
       if (!r.ok) throw new Error(String(r.status));
-      return r.json();
+      const j = await r.json();
+      if (!Array.isArray(j.elements)) throw new Error("bad overpass response"); // 오류 안내 등은 실패로 처리
+      return j;
     }));
   } catch { /* 모두 실패 → 예비 경로 */ }
   if (!data) return nominatimFallback(p, category, radius, limit);
 
-  const spots = data.elements
+  const spots = (data.elements || [])
     .map((e) => {
       const lat = e.lat ?? e.center?.lat, lon = e.lon ?? e.center?.lon;
       if (lat == null) return null;
@@ -184,7 +203,7 @@ async function find_spots(args) {
     .filter((s, i, arr) => arr.findIndex((x) => x.name === s.name) === i) // 이름 중복 제거
     .slice(0, limit);
 
-  return { center: p.name, category, radius_m: radius, count: spots.length, spots };
+  return { center: p.name, category, radius_m: radius, count: spots.length, spots, kakao_error: kakaoErr || undefined };
 }
 
 // ---------- Gemini 함수 선언 ----------
