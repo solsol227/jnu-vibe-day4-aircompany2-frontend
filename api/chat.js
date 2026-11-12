@@ -1,8 +1,8 @@
 // Vercel 서버리스 함수: Gemini 함수 호출(function calling) 에이전트
-// 환경변수: GEMINI_API_KEY (필수), GEMINI_MODEL (선택, 기본 gemini-2.5-flash)
+// 환경변수: GEMINI_API_KEY (필수), GEMINI_MODEL (선택, 기본 gemini-3.8-flash)
 const { declarations, handlers } = require("./_tools");
 
-const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const MODEL = process.env.GEMINI_MODEL || "gemini-3.8-flash";
 const MAX_STEPS = 5; // 도구 호출 반복 상한
 
 const SYSTEM = `당신은 한국 여행 추천 에이전트입니다. 한국어로, 친근하고 간결하게 답하세요.
