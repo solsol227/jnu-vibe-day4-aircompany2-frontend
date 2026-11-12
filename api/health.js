@@ -21,19 +21,23 @@ module.exports = async (req, res) => {
     try {
       const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
         method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-        signal: AbortSignal.timeout(20000),
+        signal: AbortSignal.timeout(12000),
         body: JSON.stringify({
           contents: [{ role: "user", parts: [{ text: "한 단어로 인사해줘" }] }],
           ...(withThinking && level ? { generationConfig: { thinkingConfig: { thinkingLevel: level } } } : {}),
         }),
       });
       const d = await r.json().catch(() => ({}));
-      return { status: r.status, ms: Date.now() - t, reply: d.candidates?.[0]?.content?.parts?.map((p) => p.text).join("").slice(0, 30), error: d.error?.message?.slice(0, 120) };
+      const det = d.error?.details || [];
+      const quota = (det.find((x) => /QuotaFailure/.test(x["@type"] || ""))?.violations || []).map((v) => v.quotaId || v.quotaMetric).join(", ") || undefined;
+      return { status: r.status, ms: Date.now() - t, reply: d.candidates?.[0]?.content?.parts?.map((p) => p.text).join("").slice(0, 30), error: d.error?.message?.slice(0, 120), quota, retryDelay: det.find((x) => /RetryInfo/.test(x["@type"] || ""))?.retryDelay };
     } catch (e) { return { status: "fail", ms: Date.now() - t, error: e.name }; }
   };
-  const jobs = chain.flatMap((m) => (level ? [[m, true], [m, false]] : [[m, false]]));
-  const res2 = await Promise.all(jobs.map(([m, th]) => probe(m, th)));
-  out.probes = jobs.map(([m, th], i) => ({ model: m, thinking: th ? level : "off", ...res2[i] }));
+  // 동시에 쏘면 분당 한도(429)를 점검이 직접 만들어내므로 순서대로 호출 (설정된 thinking 값으로만)
+  out.probes = [];
+  for (const m of chain) {
+    out.probes.push({ model: m, thinking: level || "off", ...(await probe(m, true)) });
+  }
 
   try {
     const r = await fetch("https://generativelanguage.googleapis.com/v1beta/models?pageSize=200", {

@@ -375,7 +375,7 @@ async function ask(text) {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const why = (data.attempts || []).map((x) => `${x.model}: ${x.status} ${x.ms}ms`).join("\n");
+      const why = (data.attempts || []).map((x) => `${x.model}: ${x.status} ${x.ms}ms` + (x.quota ? ` [${x.quota}]` : "") + (x.retryDelay ? ` 재시도 ${x.retryDelay}` : "")).join("\n");
       throw new Error((data.error || `서버 오류 (${res.status})`) + (why ? "\n\n[진단]\n" + why : ""));
     }
     const tools = (data.toolCalls || []).map((c) =>

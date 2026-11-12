@@ -6,6 +6,7 @@ const { declarations, handlers } = require("./_tools");
 const MODELS = (process.env.GEMINI_MODEL || "gemini-3.8-flash,gemini-3.7-flash,gemini-flash-latest,gemini-3.5-flash")
   .split(",").map((s) => s.trim()).filter(Boolean);
 let pref = { i: 0, until: 0 }; // 따뜻한 인스턴스에서는 최근 성공한 모델부터 시도 (5분)
+const cool = {};               // 방금 429/503이 난 모델은 잠시 건너뛰어 한도·시간 낭비를 막는다
 const MAX_STEPS = 5; // 도구 호출 반복 상한
 
 const SYSTEM = `당신은 한국 여행 추천 에이전트입니다. 한국어로, 친근하고 간결하게 답하세요.
@@ -40,6 +41,11 @@ async function callModel(model, contents, useThinking = true) {
   if (level && r.status === 400 && /think/i.test(d.error?.message || "")) return callModel(model, contents, false);
   const e = new Error(d.error?.message || `Gemini 오류 (${r.status})`);
   e.status = r.status;
+  // 429 상세: 어떤 한도(분당/일일/한도 0)인지, 몇 초 뒤 재시도 가능한지
+  const det = d.error?.details || [];
+  const viol = det.find((x) => /QuotaFailure/.test(x["@type"] || ""))?.violations || [];
+  e.quota = viol.map((v) => `${v.quotaId || v.quotaMetric || ""}`).filter(Boolean).join(", ") || undefined;
+  e.retryDelay = det.find((x) => /RetryInfo/.test(x["@type"] || ""))?.retryDelay;
   e.retryable = [404, 429, 500, 503].includes(r.status); // 키/요청 오류(400/403)는 다른 모델도 마찬가지
   throw e;
 }
@@ -52,6 +58,8 @@ async function gemini(st) {
   for (let i = first; i < MODELS.length; i++) {
     if (Date.now() - st.started > 45000) break;
     const model = MODELS[i];
+    // 쿨다운 중인 모델은 건너뜀 (남은 모델이 하나도 없을 때만 그대로 시도)
+    if ((cool[model] || 0) > Date.now() && MODELS.slice(i + 1).some((m) => (cool[m] || 0) <= Date.now())) continue;
     if (st.used && st.used !== model && st.toolCalls.length) {
       const results = JSON.stringify(st.toolCalls.map((c) => ({ tool: c.name, args: c.args, result: c.result })));
       st.contents = [...st.msgs, { role: "user", parts: [{ text: `[이미 실행된 도구 결과]
@@ -68,7 +76,9 @@ ${results}
     } catch (e) {
       last = e;
       const timeout = e.name === "TimeoutError" || e.name === "AbortError";
-      st.attempts.push({ model, status: e.status || (timeout ? "timeout" : "error"), ms: Date.now() - t0, message: String(e.message).slice(0, 160) });
+      if (e.status === 429) cool[model] = Date.now() + (parseFloat(e.retryDelay) > 0 ? Math.min(parseFloat(e.retryDelay), 60) * 1000 : 60000);
+      else if (e.status === 503 || timeout) cool[model] = Date.now() + 30000;
+      st.attempts.push({ model, status: e.status || (timeout ? "timeout" : "error"), ms: Date.now() - t0, quota: e.quota, retryDelay: e.retryDelay, message: String(e.message).slice(0, 160) });
       if (!e.retryable && !timeout) throw e;
     }
   }
