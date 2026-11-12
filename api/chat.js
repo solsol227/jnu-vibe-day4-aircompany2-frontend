@@ -3,7 +3,7 @@
 // 앞 모델이 과부하(503)/제한(429)/없음(404)이면 다음 모델로 자동 전환
 const { declarations, handlers } = require("./_tools");
 
-const MODELS = (process.env.GEMINI_MODEL || "gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-flash-latest,gemini-3-flash-preview,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-flash-lite-latest,gemini-2.5-flash-lite")
+const MODELS = (process.env.GEMINI_MODEL || "gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-flash-latest,gemini-3-flash-preview,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-flash-lite-latest")
   .split(",").map((s) => s.trim()).filter(Boolean);
 let pref = { i: 0, until: 0 }; // 따뜻한 인스턴스에서는 최근 성공한 모델부터 시도 (5분)
 const cool = {};               // 방금 429/503이 난 모델은 잠시 건너뛰어 한도·시간 낭비를 막는다
@@ -81,6 +81,7 @@ ${results}
         const sec = parseFloat(e.retryDelay) > 0 ? Math.min(parseFloat(e.retryDelay), perDay ? 21600 : 60) : 60;
         cool[model] = Date.now() + sec * 1000;
       }
+      else if (e.status === 404) cool[model] = Date.now() + 3600000;   // 제공되지 않는 모델은 1시간 건너뜀
       else if (e.status === 503 || timeout) cool[model] = Date.now() + 30000;
       st.attempts.push({ model, status: e.status || (timeout ? "timeout" : "error"), ms: Date.now() - t0, quota: e.quota, retryDelay: e.retryDelay, message: String(e.message).slice(0, 160) });
       if (!e.retryable && !timeout) throw e;
