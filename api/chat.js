@@ -28,7 +28,11 @@ async function gemini(contents) {
         systemInstruction: { parts: [{ text: SYSTEM }] },
         contents,
         tools: [{ functionDeclarations: declarations }],
-        generationConfig: { temperature: 0.5 },
+        generationConfig: {
+          temperature: 0.5,
+          // 선택: 응답이 느리면 Vercel 환경변수 GEMINI_THINKING_LEVEL=low 로 "생각" 시간을 줄일 수 있음
+          ...(process.env.GEMINI_THINKING_LEVEL ? { thinkingConfig: { thinkingLevel: process.env.GEMINI_THINKING_LEVEL } } : {}),
+        },
       }),
     });
     const d = await r.json().catch(() => ({}));
