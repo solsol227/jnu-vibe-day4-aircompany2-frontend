@@ -11,18 +11,29 @@ module.exports = async (req, res) => {
   };
   if (!key) return res.status(200).json(out);
 
-  const t = Date.now();
-  try {
-    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`, {
-      method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-      signal: AbortSignal.timeout(25000),
-      body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "한 단어로 인사해줘" }] }] }),
-    });
-    const d = await r.json().catch(() => ({}));
-    out.simple_call = { status: r.status, ms: Date.now() - t, reply: d.candidates?.[0]?.content?.parts?.map((p) => p.text).join("").slice(0, 50), error: d.error?.message };
-  } catch (e) {
-    out.simple_call = { status: "fail", ms: Date.now() - t, error: e.name + ": " + e.message };
-  }
+  const chain = (process.env.GEMINI_MODEL || "gemini-3.8-flash,gemini-3.7-flash,gemini-flash-latest,gemini-3.5-flash")
+    .split(",").map((s) => s.trim()).filter(Boolean);
+  const level = (process.env.GEMINI_THINKING_LEVEL || "").trim();
+  out.chain = chain;
+  // 모델별로 동시에 호출해 상태·소요시간을 비교 (thinkingLevel 포함/미포함 둘 다)
+  const probe = async (model, withThinking) => {
+    const t = Date.now();
+    try {
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+        method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+        signal: AbortSignal.timeout(20000),
+        body: JSON.stringify({
+          contents: [{ role: "user", parts: [{ text: "한 단어로 인사해줘" }] }],
+          ...(withThinking && level ? { generationConfig: { thinkingConfig: { thinkingLevel: level } } } : {}),
+        }),
+      });
+      const d = await r.json().catch(() => ({}));
+      return { status: r.status, ms: Date.now() - t, reply: d.candidates?.[0]?.content?.parts?.map((p) => p.text).join("").slice(0, 30), error: d.error?.message?.slice(0, 120) };
+    } catch (e) { return { status: "fail", ms: Date.now() - t, error: e.name }; }
+  };
+  const jobs = chain.flatMap((m) => (level ? [[m, true], [m, false]] : [[m, false]]));
+  const res2 = await Promise.all(jobs.map(([m, th]) => probe(m, th)));
+  out.probes = jobs.map(([m, th], i) => ({ model: m, thinking: th ? level : "off", ...res2[i] }));
 
   try {
     const r = await fetch("https://generativelanguage.googleapis.com/v1beta/models?pageSize=200", {

@@ -39,6 +39,7 @@ async function callModel(model, contents, useThinking = true) {
   // 이 모델이 thinking 옵션을 지원하지 않으면 옵션만 빼고 같은 모델로 다시 시도
   if (level && r.status === 400 && /think/i.test(d.error?.message || "")) return callModel(model, contents, false);
   const e = new Error(d.error?.message || `Gemini 오류 (${r.status})`);
+  e.status = r.status;
   e.retryable = [404, 429, 500, 503].includes(r.status); // 키/요청 오류(400/403)는 다른 모델도 마찬가지
   throw e;
 }
@@ -58,6 +59,7 @@ ${results}
 
 위 결과를 바탕으로 사용자 질문에 답하세요.` }] }];
     }
+    const t0 = Date.now();
     try {
       const d = await callModel(model, st.contents);
       st.used = model;
@@ -66,6 +68,7 @@ ${results}
     } catch (e) {
       last = e;
       const timeout = e.name === "TimeoutError" || e.name === "AbortError";
+      st.attempts.push({ model, status: e.status || (timeout ? "timeout" : "error"), ms: Date.now() - t0, message: String(e.message).slice(0, 160) });
       if (!e.retryable && !timeout) throw e;
     }
   }
@@ -86,7 +89,7 @@ module.exports = async (req, res) => {
   if (!msgs.length || msgs[msgs.length - 1].role !== "user") return res.status(400).json({ error: "마지막 메시지는 사용자 메시지여야 합니다" });
 
   const toolCalls = [];
-  const st = { msgs, contents: [...msgs], toolCalls, started: Date.now(), used: null };
+  const st = { msgs, contents: [...msgs], toolCalls, started: Date.now(), used: null, attempts: [] };
 
   try {
     for (let step = 0; step < MAX_STEPS; step++) {
@@ -117,6 +120,9 @@ module.exports = async (req, res) => {
     return res.status(200).json({ reply: "도구 호출이 너무 많아 중단했습니다. 질문을 조금 더 구체적으로 해 주세요.", toolCalls });
   } catch (e) {
     const busy = e.retryable || e.name === "TimeoutError" || e.name === "AbortError";
-    return res.status(502).json({ error: busy ? "AI 모델이 모두 혼잡하거나 응답이 지연되고 있습니다. 잠시 후 다시 시도해 주세요." : String(e.message || e) });
+    return res.status(502).json({
+      error: busy ? "AI 모델이 모두 혼잡하거나 응답이 지연되고 있습니다. 잠시 후 다시 시도해 주세요." : String(e.message || e),
+      attempts: st.attempts, // 모델별 실패 이유 (진단용)
+    });
   }
 };

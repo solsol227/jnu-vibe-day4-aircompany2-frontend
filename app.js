@@ -374,14 +374,17 @@ async function ask(text) {
       body: JSON.stringify({ messages: chatLog.slice(-12) }),
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || `서버 오류 (${res.status})`);
+    if (!res.ok) {
+      const why = (data.attempts || []).map((x) => `${x.model}: ${x.status} ${x.ms}ms`).join("\n");
+      throw new Error((data.error || `서버 오류 (${res.status})`) + (why ? "\n\n[진단]\n" + why : ""));
+    }
     const tools = (data.toolCalls || []).map((c) =>
       `<span class="tool">🔧 ${esc(c.name)}(${esc(Object.values(c.args || {}).join(", "))})</span>`).join(" ");
     wait.innerHTML = (tools ? tools + "<br>" : "") + mdLite(data.reply) + (data.model ? `<div class="tool" style="margin:6px 0 0">${esc(data.model)}</div>` : "");
     chatLog.push({ role: "model", text: data.reply });
     showSpots(data.toolCalls || []);
   } catch (e) {
-    wait.innerHTML = `⚠️ ${esc(e.message)}`;
+    wait.innerHTML = `⚠️ ${mdLite(e.message)}`;
     chatLog.pop();
   } finally {
     $("chat-send").disabled = false;
