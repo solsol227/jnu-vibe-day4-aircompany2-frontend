@@ -1,8 +1,11 @@
 // Vercel 서버리스 함수: Gemini 함수 호출(function calling) 에이전트
-// 환경변수: GEMINI_API_KEY (필수), GEMINI_MODEL (선택, 기본 gemini-3.8-flash)
+// 환경변수: GEMINI_API_KEY (필수), GEMINI_MODEL (선택, 쉼표로 우선순위 나열 가능)
+// 앞 모델이 과부하(503)/제한(429)/없음(404)이면 다음 모델로 자동 전환
 const { declarations, handlers } = require("./_tools");
 
-const MODEL = process.env.GEMINI_MODEL || "gemini-3.8-flash";
+const MODELS = (process.env.GEMINI_MODEL || "gemini-3.8-flash,gemini-3.7-flash,gemini-flash-latest,gemini-3.5-flash")
+  .split(",").map((s) => s.trim()).filter(Boolean);
+let pref = { i: 0, until: 0 }; // 따뜻한 인스턴스에서는 최근 성공한 모델부터 시도 (5분)
 const MAX_STEPS = 5; // 도구 호출 반복 상한
 
 const SYSTEM = `당신은 한국 여행 추천 에이전트입니다. 한국어로, 친근하고 간결하게 답하세요.
@@ -14,34 +17,56 @@ const SYSTEM = `당신은 한국 여행 추천 에이전트입니다. 한국어�
 - 미세먼지는 모델 예측값이라 실측과 다를 수 있음을 필요할 때 짧게 언급하세요.
 - 답변은 추천 이유(날씨 근거)를 포함해 5~8줄 이내로 정리하세요.`;
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function callModel(model, contents) {
+  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-goog-api-key": process.env.GEMINI_API_KEY.trim() },
+    signal: AbortSignal.timeout(15000),
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: SYSTEM }] },
+      contents,
+      tools: [{ functionDeclarations: declarations }],
+      generationConfig: {
+        temperature: 0.5,
+        // 선택: 응답이 느리면 Vercel 환경변수 GEMINI_THINKING_LEVEL=low 로 "생각" 시간을 줄일 수 있음
+        ...(process.env.GEMINI_THINKING_LEVEL ? { thinkingConfig: { thinkingLevel: process.env.GEMINI_THINKING_LEVEL } } : {}),
+      },
+    }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (r.ok) return d;
+  const e = new Error(d.error?.message || `Gemini 오류 (${r.status})`);
+  e.retryable = [404, 429, 500, 503].includes(r.status); // 키/요청 오류(400/403)는 다른 모델도 마찬가지
+  throw e;
+}
 
-// 일시적 과부하(429/500/503)는 짧게 대기하며 최대 2번 시도
-async function gemini(contents) {
+// 모델을 순서대로 시도. 도구 호출 이후 모델이 바뀌면 서명(thought signature) 불일치를 피하려고
+// 함수 호출 이력을 텍스트 요약으로 바꿔서 전달한다.
+async function gemini(st) {
+  const first = Date.now() < pref.until ? pref.i : 0;
   let last;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-goog-api-key": process.env.GEMINI_API_KEY.trim() },
-      signal: AbortSignal.timeout(30000),
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: SYSTEM }] },
-        contents,
-        tools: [{ functionDeclarations: declarations }],
-        generationConfig: {
-          temperature: 0.5,
-          // 선택: 응답이 느리면 Vercel 환경변수 GEMINI_THINKING_LEVEL=low 로 "생각" 시간을 줄일 수 있음
-          ...(process.env.GEMINI_THINKING_LEVEL ? { thinkingConfig: { thinkingLevel: process.env.GEMINI_THINKING_LEVEL } } : {}),
-        },
-      }),
-    });
-    const d = await r.json().catch(() => ({}));
-    if (r.ok) return d;
-    last = new Error(d.error?.message || `Gemini 오류 (${r.status})`);
-    if (![429, 500, 503].includes(r.status)) break;   // 키/요청 오류는 재시도해도 소용없음
-    await sleep(1000 * (attempt + 1));
+  for (let i = first; i < MODELS.length; i++) {
+    if (Date.now() - st.started > 45000) break;
+    const model = MODELS[i];
+    if (st.used && st.used !== model && st.toolCalls.length) {
+      const results = JSON.stringify(st.toolCalls.map((c) => ({ tool: c.name, args: c.args, result: c.result })));
+      st.contents = [...st.msgs, { role: "user", parts: [{ text: `[이미 실행된 도구 결과]
+${results}
+
+위 결과를 바탕으로 사용자 질문에 답하세요.` }] }];
+    }
+    try {
+      const d = await callModel(model, st.contents);
+      st.used = model;
+      pref = i === 0 ? { i: 0, until: 0 } : { i, until: Date.now() + 5 * 60 * 1000 };
+      return d;
+    } catch (e) {
+      last = e;
+      const timeout = e.name === "TimeoutError" || e.name === "AbortError";
+      if (!e.retryable && !timeout) throw e;
+    }
   }
-  throw last;
+  throw last || new Error("응답 시간 초과");
 }
 
 module.exports = async (req, res) => {
@@ -57,26 +82,25 @@ module.exports = async (req, res) => {
     .map((m) => ({ role: m.role, parts: [{ text: m.text.slice(0, 500) }] }));
   if (!msgs.length || msgs[msgs.length - 1].role !== "user") return res.status(400).json({ error: "마지막 메시지는 사용자 메시지여야 합니다" });
 
-  const contents = [...msgs];
   const toolCalls = [];
-  const started = Date.now();
+  const st = { msgs, contents: [...msgs], toolCalls, started: Date.now(), used: null };
 
   try {
     for (let step = 0; step < MAX_STEPS; step++) {
-      if (Date.now() - started > 40000) { // Vercel 제한(60초) 전에 스스로 마무리
+      if (Date.now() - st.started > 40000) { // Vercel 제한(60초) 전에 스스로 마무리
         return res.status(200).json({ reply: "응답이 오래 걸려 중단했습니다. 잠시 후 다시 시도하거나 질문을 더 짧게 해 주세요.", toolCalls });
       }
-      const d = await gemini(contents);
+      const d = await gemini(st);
       const cand = d.candidates?.[0];
       const parts = cand?.content?.parts || [];
       const calls = parts.filter((p) => p.functionCall);
 
       if (!calls.length) {
         const reply = parts.map((p) => p.text || "").join("").trim();
-        return res.status(200).json({ reply: reply || "답변을 만들지 못했습니다. 다시 질문해 주세요.", toolCalls });
+        return res.status(200).json({ reply: reply || "답변을 만들지 못했습니다. 다시 질문해 주세요.", toolCalls, model: st.used });
       }
 
-      contents.push(cand.content); // 모델의 함수 호출 턴을 그대로 이력에 추가
+      st.contents.push(cand.content); // 모델의 함수 호출 턴을 그대로 이력에 추가
       const responses = await Promise.all(calls.map(async ({ functionCall: fc }) => {
         const fn = handlers[fc.name];
         let result;
@@ -85,11 +109,11 @@ module.exports = async (req, res) => {
         toolCalls.push({ name: fc.name, args: fc.args || {}, result });
         return { functionResponse: { name: fc.name, response: { result } } };
       }));
-      contents.push({ role: "user", parts: responses });
+      st.contents.push({ role: "user", parts: responses });
     }
     return res.status(200).json({ reply: "도구 호출이 너무 많아 중단했습니다. 질문을 조금 더 구체적으로 해 주세요.", toolCalls });
   } catch (e) {
-    const timedOut = e.name === "TimeoutError" || e.name === "AbortError";
-    return res.status(502).json({ error: timedOut ? "AI 응답이 지연되고 있습니다. 잠시 후 다시 시도해 주세요." : String(e.message || e) });
+    const busy = e.retryable || e.name === "TimeoutError" || e.name === "AbortError";
+    return res.status(502).json({ error: busy ? "AI 모델이 모두 혼잡하거나 응답이 지연되고 있습니다. 잠시 후 다시 시도해 주세요." : String(e.message || e) });
   }
 };

@@ -377,7 +377,7 @@ async function ask(text) {
     if (!res.ok) throw new Error(data.error || `서버 오류 (${res.status})`);
     const tools = (data.toolCalls || []).map((c) =>
       `<span class="tool">🔧 ${esc(c.name)}(${esc(Object.values(c.args || {}).join(", "))})</span>`).join(" ");
-    wait.innerHTML = (tools ? tools + "<br>" : "") + mdLite(data.reply);
+    wait.innerHTML = (tools ? tools + "<br>" : "") + mdLite(data.reply) + (data.model ? `<div class="tool" style="margin:6px 0 0">${esc(data.model)}</div>` : "");
     chatLog.push({ role: "model", text: data.reply });
     showSpots(data.toolCalls || []);
   } catch (e) {
