@@ -23,7 +23,7 @@ async function gemini(contents) {
     const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-goog-api-key": process.env.GEMINI_API_KEY.trim() },
-      signal: AbortSignal.timeout(12000),
+      signal: AbortSignal.timeout(30000),
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: SYSTEM }] },
         contents,
@@ -59,7 +59,7 @@ module.exports = async (req, res) => {
 
   try {
     for (let step = 0; step < MAX_STEPS; step++) {
-      if (Date.now() - started > 18000) { // Vercel 제한(30초) 전에 스스로 마무리
+      if (Date.now() - started > 40000) { // Vercel 제한(60초) 전에 스스로 마무리
         return res.status(200).json({ reply: "응답이 오래 걸려 중단했습니다. 잠시 후 다시 시도하거나 질문을 더 짧게 해 주세요.", toolCalls });
       }
       const d = await gemini(contents);
@@ -85,6 +85,7 @@ module.exports = async (req, res) => {
     }
     return res.status(200).json({ reply: "도구 호출이 너무 많아 중단했습니다. 질문을 조금 더 구체적으로 해 주세요.", toolCalls });
   } catch (e) {
-    return res.status(502).json({ error: String(e.message || e) });
+    const timedOut = e.name === "TimeoutError" || e.name === "AbortError";
+    return res.status(502).json({ error: timedOut ? "AI 응답이 지연되고 있습니다. 잠시 후 다시 시도해 주세요." : String(e.message || e) });
   }
 };
