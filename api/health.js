@@ -11,7 +11,7 @@ module.exports = async (req, res) => {
   };
   if (!key) return res.status(200).json(out);
 
-  const chain = (process.env.GEMINI_MODEL || "gemini-3.8-flash,gemini-3.7-flash,gemini-flash-latest,gemini-3.5-flash")
+  const chain = (process.env.GEMINI_MODEL || "gemini-3.8-flash,gemini-3.7-flash,gemini-3.6-flash,gemini-3.5-flash,gemini-flash-latest,gemini-3-flash-preview,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-flash-lite-latest,gemini-2.5-flash-lite")
     .split(",").map((s) => s.trim()).filter(Boolean);
   const level = (process.env.GEMINI_THINKING_LEVEL || "").trim();
   out.chain = chain;
@@ -35,7 +35,9 @@ module.exports = async (req, res) => {
   };
   // 동시에 쏘면 분당 한도(429)를 점검이 직접 만들어내므로 순서대로 호출 (설정된 thinking 값으로만)
   out.probes = [];
+  const t0 = Date.now();
   for (const m of chain) {
+    if (Date.now() - t0 > 40000) { out.probes.push({ model: m, skipped: "시간 초과로 생략" }); continue; }
     out.probes.push({ model: m, thinking: level || "off", ...(await probe(m, true)) });
   }
 
