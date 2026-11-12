@@ -1,0 +1,223 @@
+// 에이전트가 호출하는 두 가지 도구: get_weather, find_spots (둘 다 API 키 불필요)
+const UA = "weather-agent-demo/1.0";
+
+// ---------- 공통: 지명 → 좌표 (Open-Meteo 지오코딩) ----------
+const KAKAO_KEY = () => process.env.KAKAO_REST_API_KEY;
+const kakaoGet = async (path, params) => {
+  const r = await fetch(`https://dapi.kakao.com/v2/local/search/${path}.json?${new URLSearchParams(params)}`, {
+    headers: { Authorization: `KakaoAK ${KAKAO_KEY()}` }, signal: AbortSignal.timeout(8000),
+  });
+  if (!r.ok) throw new Error(`Kakao ${r.status}`);
+  return r.json();
+};
+
+async function geocode(location) {
+  if (KAKAO_KEY()) { // 카카오: 한글 지명("제주", "홍대입구역")을 그대로 처리
+    try {
+      const d = await kakaoGet("keyword", { query: location, size: 1 });
+      const k = d.documents?.[0];
+      if (k) return { name: k.place_name, lat: +k.y, lon: +k.x };
+    } catch { /* Open-Meteo로 폴백 */ }
+  }
+  const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1&language=ko`;
+  const r = await fetch(url);
+  const d = await r.json();
+  const g = d.results?.[0];
+  if (!g) return null;
+  return { name: [g.name, g.admin1].filter(Boolean).join(", "), lat: g.latitude, lon: g.longitude };
+}
+
+async function resolvePlace({ location, latitude, longitude }) {
+  if (typeof latitude === "number" && typeof longitude === "number") {
+    return { name: location || "지정 좌표", lat: latitude, lon: longitude };
+  }
+  if (!location) return null;
+  return geocode(location);
+}
+
+const WMO = {
+  0: "맑음", 1: "대체로 맑음", 2: "구름 조금", 3: "흐림", 45: "안개", 48: "서리 안개",
+  51: "약한 이슬비", 53: "이슬비", 55: "강한 이슬비", 61: "약한 비", 63: "비", 65: "강한 비",
+  71: "약한 눈", 73: "눈", 75: "강한 눈", 80: "약한 소나기", 81: "소나기", 82: "강한 소나기",
+  95: "뇌우", 96: "우박 동반 뇌우", 99: "강한 우박 뇌우",
+};
+const pmGrade = (kind, v) => {
+  if (v == null) return null;
+  const c = kind === "pm10" ? [30, 80, 150] : [15, 35, 75];
+  return v <= c[0] ? "좋음" : v <= c[1] ? "보통" : v <= c[2] ? "나쁨" : "매우나쁨";
+};
+
+// ---------- Tool 1: get_weather ----------
+async function get_weather(args) {
+  const p = await resolvePlace(args);
+  if (!p) return { error: `'${args.location}' 위치를 찾지 못했습니다. 다른 표기(한글↔영문)로 다시 시도하세요.` };
+
+  const w = await (await fetch(
+    `https://api.open-meteo.com/v1/forecast?latitude=${p.lat}&longitude=${p.lon}` +
+    `&current=temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m` +
+    `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto&forecast_days=4`
+  )).json();
+  if (w.error) return { error: "날씨 API 오류: " + w.reason };
+
+  let air = null;
+  try {
+    const a = await (await fetch(
+      `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${p.lat}&longitude=${p.lon}&current=pm10,pm2_5&timezone=auto`
+    )).json();
+    if (a.current) {
+      air = {
+        pm10: a.current.pm10, pm10_grade: pmGrade("pm10", a.current.pm10),
+        pm25: a.current.pm2_5, pm25_grade: pmGrade("pm25", a.current.pm2_5),
+        note: "모델 기반 예측값(실측과 다를 수 있음)",
+      };
+    }
+  } catch { /* 미세먼지는 실패해도 날씨는 반환 */ }
+
+  const c = w.current;
+  return {
+    place: p.name, lat: p.lat, lon: p.lon,
+    now: {
+      temp_c: c.temperature_2m, feels_like_c: c.apparent_temperature, humidity_pct: c.relative_humidity_2m,
+      precipitation_mm: c.precipitation, wind_kmh: c.wind_speed_10m, condition: WMO[c.weather_code] || "알 수 없음",
+    },
+    air,
+    forecast: w.daily.time.map((t, i) => ({
+      date: t, condition: WMO[w.daily.weather_code[i]] || "알 수 없음",
+      min_c: w.daily.temperature_2m_min[i], max_c: w.daily.temperature_2m_max[i],
+      rain_prob_pct: w.daily.precipitation_probability_max[i],
+    })),
+  };
+}
+
+// ---------- Tool 2: find_spots (OpenStreetMap Overpass) ----------
+const CATEGORY = {
+  attraction: '["tourism"~"attraction|viewpoint|museum|gallery|zoo|theme_park"]',
+  museum: '["tourism"~"museum|gallery"]',
+  cafe: '["amenity"="cafe"]',
+  restaurant: '["amenity"="restaurant"]',
+  park: '["leisure"~"park|garden|nature_reserve"]',
+  beach: '["natural"="beach"]',
+};
+const OVERPASS = ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"];
+
+const dist = (la1, lo1, la2, lo2) => {
+  const R = 6371000, r = Math.PI / 180;
+  const a = Math.sin(((la2 - la1) * r) / 2) ** 2 + Math.cos(la1 * r) * Math.cos(la2 * r) * Math.sin(((lo2 - lo1) * r) / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+};
+
+// Overpass가 모두 실패했을 때의 예비 경로 (Nominatim 텍스트 검색)
+const WORD = { attraction: "tourist attraction", museum: "museum", cafe: "cafe", restaurant: "restaurant", park: "park", beach: "beach" };
+async function nominatimFallback(p, category, radius, limit) {
+  const dLat = radius / 111000, dLon = radius / (111000 * Math.cos((p.lat * Math.PI) / 180));
+  const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(WORD[category])}&format=jsonv2&limit=${limit}` +
+    `&accept-language=ko&bounded=1&viewbox=${p.lon - dLon},${p.lat + dLat},${p.lon + dLon},${p.lat - dLat}`;
+  try {
+    const r = await fetch(url, { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(10000) });
+    if (!r.ok) throw new Error(String(r.status));
+    const list = await r.json();
+    const spots = list.map((x) => ({
+      name: x.name || x.display_name.split(",")[0], type: x.type || category,
+      lat: +x.lat, lon: +x.lon, distance_m: Math.round(dist(p.lat, p.lon, +x.lat, +x.lon)),
+    })).sort((a, b) => a.distance_m - b.distance_m);
+    return { center: p.name, category, radius_m: radius, count: spots.length, spots, source: "nominatim(fallback)" };
+  } catch {
+    return { error: "장소 검색 서버가 응답하지 않습니다. 잠시 후 다시 시도하세요." };
+  }
+}
+
+// 카카오 로컬 API: 카테고리 코드가 있으면 카테고리 검색, 없으면 키워드 검색 (모두 거리순)
+const KAKAO_CAT = { attraction: "AT4", museum: "CT1", cafe: "CE7", restaurant: "FD6" };
+const KAKAO_WORD = { park: "공원", beach: "해수욕장" };
+async function kakaoSpots(p, category, radius, limit) {
+  const base = { x: p.lon, y: p.lat, radius, sort: "distance", size: Math.min(limit, 15) };
+  const d = KAKAO_CAT[category]
+    ? await kakaoGet("category", { ...base, category_group_code: KAKAO_CAT[category] })
+    : await kakaoGet("keyword", { ...base, query: KAKAO_WORD[category] });
+  const spots = (d.documents || []).map((x) => ({
+    name: x.place_name, type: x.category_name?.split(" > ").slice(-1)[0] || category,
+    address: x.road_address_name || x.address_name, lat: +x.y, lon: +x.x,
+    distance_m: Number(x.distance) || Math.round(dist(p.lat, p.lon, +x.y, +x.x)), url: x.place_url,
+  }));
+  return { center: p.name, category, radius_m: radius, count: spots.length, spots, source: "kakao" };
+}
+
+async function find_spots(args) {
+  const category = CATEGORY[args.category] ? args.category : "attraction";
+  const limit = Math.min(Math.max(Number(args.limit) || 6, 1), 10);
+  const radius = Math.min(Math.max(Number(args.radius_m) || 5000, 500), 20000);
+  const p = await resolvePlace(args);
+  if (!p) return { error: `'${args.location}' 위치를 찾지 못했습니다. 다른 표기(한글↔영문)로 다시 시도하세요.` };
+
+  if (KAKAO_KEY()) {
+    const k = await kakaoSpots(p, category, radius, limit).catch(() => null);
+    if (k) return k;
+  }
+
+  const q = `[out:json][timeout:15];nwr${CATEGORY[category]}["name"](around:${radius},${p.lat},${p.lon});out center 60;`;
+  let data = null;
+  for (const ep of OVERPASS) {
+    try {
+      const r = await fetch(ep, {
+        method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": UA },
+        body: "data=" + encodeURIComponent(q), signal: AbortSignal.timeout(18000),
+      });
+      if (r.ok) { data = await r.json(); break; }
+    } catch { /* 다음 서버 시도 */ }
+  }
+  if (!data) return nominatimFallback(p, category, radius, limit);
+
+  const spots = data.elements
+    .map((e) => {
+      const lat = e.lat ?? e.center?.lat, lon = e.lon ?? e.center?.lon;
+      if (lat == null) return null;
+      const t = e.tags;
+      return {
+        name: t["name:ko"] || t.name, type: t.tourism || t.amenity || t.leisure || t.natural || category,
+        lat, lon, distance_m: Math.round(dist(p.lat, p.lon, lat, lon)),
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.distance_m - b.distance_m)
+    .filter((s, i, arr) => arr.findIndex((x) => x.name === s.name) === i) // 이름 중복 제거
+    .slice(0, limit);
+
+  return { center: p.name, category, radius_m: radius, count: spots.length, spots };
+}
+
+// ---------- Gemini 함수 선언 ----------
+const declarations = [
+  {
+    name: "get_weather",
+    description: "특정 장소의 실시간 날씨(기온·체감·습도·강수·풍속), 미세먼지(PM10/PM2.5), 향후 4일 예보를 조회한다.",
+    parameters: {
+      type: "object",
+      properties: {
+        location: { type: "string", description: "지명 (예: 제주, 서울, 홍대입구역, 강릉). 한글 그대로 넣어도 되며, 실패하면 영문(Jeju)으로 재시도" },
+      },
+      required: ["location"],
+    },
+  },
+  {
+    name: "find_spots",
+    description: "특정 장소 주변의 관광지·카페·식당·공원·해변·박물관을 검색해 가까운 순으로 돌려준다.",
+    parameters: {
+      type: "object",
+      properties: {
+        location: { type: "string", description: "검색 중심 지명 (예: 제주, 서울, 성수동). 한글 그대로 넣어도 되며, 실패하면 영문으로 재시도" },
+        category: {
+          type: "string",
+          enum: Object.keys(CATEGORY),
+          description: "attraction=관광지, museum=박물관/미술관(실내), cafe=카페, restaurant=식당, park=공원, beach=해변",
+        },
+        radius_m: { type: "integer", description: "검색 반경(미터), 기본 5000, 최대 20000" },
+        limit: { type: "integer", description: "결과 개수, 기본 6, 최대 10" },
+      },
+      required: ["location", "category"],
+    },
+  },
+];
+
+const handlers = { get_weather, find_spots };
+
+module.exports = { declarations, handlers };

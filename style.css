@@ -68,6 +68,15 @@ h1 { text-align: center; margin: 0 0 16px; }
 .daily .rain { font-size: .8rem; opacity: .75; }
 .legend { font-size: .8rem; opacity: .9; }
 .lg { font-style: normal; background: #ffffff33; border-radius: 4px; padding: 0 5px; }
-#map { height: 480px; cursor: grab; background: radial-gradient(#25508f, #12264a); overflow: hidden; }
-#map canvas { display: block; }
-.tip3d { position: absolute; pointer-events: none; background: #000b; color: #fff; padding: 4px 8px; border-radius: 6px; font-size: .8rem; white-space: nowrap; z-index: 5; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.chip { border: 0; border-radius: 14px; padding: 5px 10px; background: #ffffff26; color: #fff; cursor: pointer; font-size: .8rem; }
+.chip:hover { background: #ffffff44; }
+.chat-log { max-height: 340px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+.msg { padding: 8px 12px; border-radius: 12px; max-width: 92%; line-height: 1.5; font-size: .92rem; }
+.msg.user { align-self: flex-end; background: #ffffff; color: #1b2a49; }
+.msg.model { align-self: flex-start; background: #0000003a; }
+.tool { display: inline-block; font-size: .72rem; background: #ffffff2e; border-radius: 6px; padding: 1px 6px; margin-bottom: 4px; }
+.chat-form { display: flex; gap: 8px; }
+.chat-form input { flex: 1; padding: 10px 12px; border: 0; border-radius: 8px; font-size: 1rem; }
+.chat-form button { padding: 10px 14px; border: 0; border-radius: 8px; background: #ffffff33; color: #fff; cursor: pointer; }
+.chat-form button:disabled { opacity: .5; }
