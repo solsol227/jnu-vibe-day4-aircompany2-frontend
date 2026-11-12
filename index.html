@@ -4,7 +4,6 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>실시간 날씨</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -25,10 +24,10 @@
     <section class="card">
       <div class="mapbar">
         <b>전국 현황</b>
-        <span class="legend">위 <b>기온</b> · 아래 <i class="lg">PM10</i> <i class="lg">PM2.5</i></span>
+        <span class="legend">높이 <b>기온</b> · 색 <b>PM2.5</b> · 라벨 <i class="lg">PM10</i> <i class="lg">PM2.5</i></span>
       </div>
       <div id="map"></div>
-      <p class="hint">마커나 지도의 아무 곳이나 누르면 그 지점의 날씨·미세먼지를 봅니다.<br>
+      <p class="hint">드래그로 회전, 휠로 확대/축소. 지역을 누르면 날씨·미세먼지를 봅니다.<br>
         미세먼지는 위성·모델 기반 <b>예측값</b>(Open-Meteo/CAMS)이며 측정소 실측값과 다를 수 있습니다.</p>
     </section>
 
@@ -55,7 +54,12 @@
       <ul id="daily" class="daily"></ul>
     </section>
   </main>
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="app.js"></script>
+  <script type="importmap">
+    { "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    } }
+  </script>
+  <script type="module" src="app.js"></script>
 </body>
 </html>

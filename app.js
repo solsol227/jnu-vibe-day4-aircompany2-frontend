@@ -1,3 +1,4 @@
+import { init3D, update as update3D, select as select3D } from "./map3d.js";
 // Open-Meteo API (API 키 불필요)
 const GEO_URL = "https://geocoding-api.open-meteo.com/v1/search";
 const FORECAST_URL = "https://api.open-meteo.com/v1/forecast";
@@ -264,66 +265,55 @@ $("geo-btn").addEventListener("click", () => {
 
 load(current);
 
-// ---------- 지도 (Leaflet) ----------
-let map = null, markerLayer = null, selected = null, sidoData = [];
+// ---------- 3D 지도 (three.js) ----------
+let sidoData = [], map3dOk = false;
 
-function markerIcon(r, isSel) {
-  const chip = (v, k) => {
-    const c = GRADE_COLOR[grade(k, v)] || GRAY;
-    return `<span style="background:${c};color:#fff;border-radius:4px;padding:0 4px;min-width:20px;text-align:center">${v == null ? "-" : Math.round(v)}</span>`;
-  };
-  const t = r.temp == null ? "-" : `${Math.round(r.temp)}°`;
-  return L.divIcon({
-    className: "", iconSize: [64, 44], iconAnchor: [32, 22],
-    html: `<div style="width:64px;height:44px;border-radius:10px;background:#fff;color:#1b2a49;display:flex;flex-direction:column;` +
-      `align-items:center;justify-content:center;gap:2px;font:bold 11px sans-serif;box-shadow:0 1px 5px rgba(0,0,0,.45);` +
-      `border:${isSel ? "3px solid #1b2a49" : "1px solid #ccc"}">` +
-      `<div style="font-size:15px;line-height:1">${t}</div>` +
-      `<div style="display:flex;gap:3px">${chip(r.pm10, "pm10")}${chip(r.pm25, "pm25")}</div></div>`,
-  });
-}
-
-function drawMarkers() {
-  if (!markerLayer) return;
-  markerLayer.clearLayers();
-  for (const r of sidoData) {
-    L.marker([r.lat, r.lon], { icon: markerIcon(r, r.name === selected) })
-      .on("click", (e) => { L.DomEvent.stopPropagation(e); load({ name: r.name, lat: r.lat, lon: r.lon }); })
-      .bindTooltip(`${r.name} · ${r.temp == null ? "-" : Math.round(r.temp) + "°C"} · PM10 ${r.pm10 == null ? "-" : Math.round(r.pm10)} · PM2.5 ${r.pm25 == null ? "-" : Math.round(r.pm25)}`)
-      .addTo(markerLayer);
-  }
+function nearestSido(lat, lon) {
+  let best = 0, bd = Infinity;
+  SIDO.forEach(([, la, lo], i) => { const d = (la - lat) ** 2 + (lo - lon) ** 2; if (d < bd) { bd = d; best = i; } });
+  return best;
 }
 
 function focusMap(place) {
-  selected = place.name;
-  if (!map) return;
-  map.setView([place.lat, place.lon], Math.max(map.getZoom(), 8));
-  drawMarkers();
+  if (map3dOk) select3D(nearestSido(place.lat, place.lon));
 }
 
+const CACHE_KEY = "sido-cache-v1";
 async function loadSido() {
+  // 새로고침해도 10분 안에는 저장된 값을 사용 (Open-Meteo 호출 제한 보호: 시도 17곳 = 호출 17회씩)
+  try {
+    const c = JSON.parse(localStorage.getItem(CACHE_KEY));
+    if (c && Date.now() - c.t < REFRESH_MS) { sidoData = c.data; return update3D(sidoData); }
+  } catch {}
   const lat = SIDO.map((s) => s[1]).join(","), lon = SIDO.map((s) => s[2]).join(",");
   const [w, a] = await Promise.all([
     fetch(`${FORECAST_URL}?latitude=${lat}&longitude=${lon}&current=temperature_2m&timezone=auto`).then((r) => r.json()),
     fetch(`${AIR_URL}?latitude=${lat}&longitude=${lon}&current=pm10,pm2_5&timezone=auto`).then((r) => r.json()).catch(() => []),
   ]);
   const wl = Array.isArray(w) ? w : [w], al = Array.isArray(a) ? a : [a];
-  sidoData = SIDO.map(([name, la, lo], i) => ({
-    name, lat: la, lon: lo,
-    temp: wl[i]?.current?.temperature_2m,
-    pm10: al[i]?.current?.pm10,
-    pm25: al[i]?.current?.pm2_5,
-  }));
-  drawMarkers();
+  sidoData = SIDO.map(([name, la, lo], i) => {
+    const pm10 = al[i]?.current?.pm10, pm25 = al[i]?.current?.pm2_5;
+    return {
+      name, lat: la, lon: lo, temp: wl[i]?.current?.temperature_2m, pm10, pm25,
+      pm10Color: GRADE_COLOR[grade("pm10", pm10)] || GRAY,
+      pm25Color: GRADE_COLOR[grade("pm25", pm25)] || GRAY,
+    };
+  });
+  if (sidoData.every((s) => s.temp != null && s.pm25 != null)) {  // 호출 제한 등으로 빈 값이 있으면 캐시하지 않음
+    try { localStorage.setItem(CACHE_KEY, JSON.stringify({ t: Date.now(), data: sidoData })); } catch {}
+  }
+  await update3D(sidoData);
 }
 
-function initMap() {
-  if (typeof L === "undefined") return setStatus("지도 라이브러리를 불러오지 못했습니다");
-  map = L.map("map").setView([36.2, 127.8], 7);
-  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-    { attribution: "© OpenStreetMap", maxZoom: 18 }).addTo(map);
-  markerLayer = L.layerGroup().addTo(map);
-  map.on("click", (e) => load({ name: "선택 지점", lat: e.latlng.lat, lon: e.latlng.lng }));
+async function initMap() {
+  try {
+    await init3D($("map"), {
+      onPick: ({ idx, lat, lon }) => load({ name: SIDO[idx][0], lat, lon }),
+    });
+    map3dOk = true;
+  } catch (e) {
+    return setStatus("⚠️ 3D 지도를 시작하지 못했습니다 (WebGL 필요): " + e.message);
+  }
   loadSido().catch(() => setStatus("⚠️ 전국 지도 데이터를 불러오지 못했습니다"));
   setInterval(() => loadSido().catch(() => {}), REFRESH_MS);
 }

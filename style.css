@@ -68,3 +68,6 @@ h1 { text-align: center; margin: 0 0 16px; }
 .daily .rain { font-size: .8rem; opacity: .75; }
 .legend { font-size: .8rem; opacity: .9; }
 .lg { font-style: normal; background: #ffffff33; border-radius: 4px; padding: 0 5px; }
+#map { height: 480px; cursor: grab; background: radial-gradient(#25508f, #12264a); overflow: hidden; }
+#map canvas { display: block; }
+.tip3d { position: absolute; pointer-events: none; background: #000b; color: #fff; padding: 4px 8px; border-radius: 6px; font-size: .8rem; white-space: nowrap; z-index: 5; }
