@@ -14,20 +14,29 @@ const SYSTEM = `당신은 한국 여행 추천 에이전트입니다. 한국어�
 - 미세먼지는 모델 예측값이라 실측과 다를 수 있음을 필요할 때 짧게 언급하세요.
 - 답변은 추천 이유(날씨 근거)를 포함해 5~8줄 이내로 정리하세요.`;
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// 일시적 과부하(429/500/503)는 짧게 대기하며 최대 3번까지 재시도
 async function gemini(contents) {
-  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "x-goog-api-key": process.env.GEMINI_API_KEY },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: SYSTEM }] },
-      contents,
-      tools: [{ functionDeclarations: declarations }],
-      generationConfig: { temperature: 0.5 },
-    }),
-  });
-  const d = await r.json();
-  if (!r.ok) throw new Error(d.error?.message || `Gemini 오류 (${r.status})`);
-  return d;
+  let last;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-goog-api-key": process.env.GEMINI_API_KEY.trim() },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: SYSTEM }] },
+        contents,
+        tools: [{ functionDeclarations: declarations }],
+        generationConfig: { temperature: 0.5 },
+      }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok) return d;
+    last = new Error(d.error?.message || `Gemini 오류 (${r.status})`);
+    if (![429, 500, 503].includes(r.status)) break;   // 키/요청 오류는 재시도해도 소용없음
+    await sleep(1000 * (attempt + 1));
+  }
+  throw last;
 }
 
 module.exports = async (req, res) => {
