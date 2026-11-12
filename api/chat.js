@@ -17,7 +17,8 @@ const SYSTEM = `당신은 한국 여행 추천 에이전트입니다. 한국어�
 - 미세먼지는 모델 예측값이라 실측과 다를 수 있음을 필요할 때 짧게 언급하세요.
 - 답변은 추천 이유(날씨 근거)를 포함해 5~8줄 이내로 정리하세요.`;
 
-async function callModel(model, contents) {
+async function callModel(model, contents, useThinking = true) {
+  const level = useThinking ? (process.env.GEMINI_THINKING_LEVEL || "").trim() : "";
   const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-goog-api-key": process.env.GEMINI_API_KEY.trim() },
@@ -29,12 +30,14 @@ async function callModel(model, contents) {
       generationConfig: {
         temperature: 0.5,
         // 선택: 응답이 느리면 Vercel 환경변수 GEMINI_THINKING_LEVEL=low 로 "생각" 시간을 줄일 수 있음
-        ...(process.env.GEMINI_THINKING_LEVEL ? { thinkingConfig: { thinkingLevel: process.env.GEMINI_THINKING_LEVEL } } : {}),
+        ...(level ? { thinkingConfig: { thinkingLevel: level } } : {}),
       },
     }),
   });
   const d = await r.json().catch(() => ({}));
   if (r.ok) return d;
+  // 이 모델이 thinking 옵션을 지원하지 않으면 옵션만 빼고 같은 모델로 다시 시도
+  if (level && r.status === 400 && /think/i.test(d.error?.message || "")) return callModel(model, contents, false);
   const e = new Error(d.error?.message || `Gemini 오류 (${r.status})`);
   e.retryable = [404, 429, 500, 503].includes(r.status); // 키/요청 오류(400/403)는 다른 모델도 마찬가지
   throw e;
