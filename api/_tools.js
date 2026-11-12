@@ -113,7 +113,7 @@ async function nominatimFallback(p, category, radius, limit) {
   const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(WORD[category])}&format=jsonv2&limit=${limit}` +
     `&accept-language=ko&bounded=1&viewbox=${p.lon - dLon},${p.lat + dLat},${p.lon + dLon},${p.lat - dLat}`;
   try {
-    const r = await fetch(url, { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(10000) });
+    const r = await fetch(url, { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(6000) });
     if (!r.ok) throw new Error(String(r.status));
     const list = await r.json();
     const spots = list.map((x) => ({
@@ -154,17 +154,19 @@ async function find_spots(args) {
     if (k) return k;
   }
 
-  const q = `[out:json][timeout:15];nwr${CATEGORY[category]}["name"](around:${radius},${p.lat},${p.lon});out center 60;`;
+  const q = `[out:json][timeout:8];nwr${CATEGORY[category]}["name"](around:${radius},${p.lat},${p.lon});out center 60;`;
+  // 두 서버에 동시에 요청하고 먼저 성공한 쪽을 사용 (각 9초 제한)
   let data = null;
-  for (const ep of OVERPASS) {
-    try {
+  try {
+    data = await Promise.any(OVERPASS.map(async (ep) => {
       const r = await fetch(ep, {
         method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": UA },
-        body: "data=" + encodeURIComponent(q), signal: AbortSignal.timeout(18000),
+        body: "data=" + encodeURIComponent(q), signal: AbortSignal.timeout(9000),
       });
-      if (r.ok) { data = await r.json(); break; }
-    } catch { /* 다음 서버 시도 */ }
-  }
+      if (!r.ok) throw new Error(String(r.status));
+      return r.json();
+    }));
+  } catch { /* 모두 실패 → 예비 경로 */ }
   if (!data) return nominatimFallback(p, category, radius, limit);
 
   const spots = data.elements

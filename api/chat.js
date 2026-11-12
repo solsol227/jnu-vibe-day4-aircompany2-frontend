@@ -16,13 +16,14 @@ const SYSTEM = `당신은 한국 여행 추천 에이전트입니다. 한국어�
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// 일시적 과부하(429/500/503)는 짧게 대기하며 최대 3번까지 재시도
+// 일시적 과부하(429/500/503)는 짧게 대기하며 최대 2번 시도
 async function gemini(contents) {
   let last;
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < 2; attempt++) {
     const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-goog-api-key": process.env.GEMINI_API_KEY.trim() },
+      signal: AbortSignal.timeout(12000),
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: SYSTEM }] },
         contents,
@@ -54,9 +55,13 @@ module.exports = async (req, res) => {
 
   const contents = [...msgs];
   const toolCalls = [];
+  const started = Date.now();
 
   try {
     for (let step = 0; step < MAX_STEPS; step++) {
+      if (Date.now() - started > 18000) { // Vercel 제한(30초) 전에 스스로 마무리
+        return res.status(200).json({ reply: "응답이 오래 걸려 중단했습니다. 잠시 후 다시 시도하거나 질문을 더 짧게 해 주세요.", toolCalls });
+      }
       const d = await gemini(contents);
       const cand = d.candidates?.[0];
       const parts = cand?.content?.parts || [];
