@@ -265,24 +265,21 @@ $("geo-btn").addEventListener("click", () => {
 load(current);
 
 // ---------- 지도 (Leaflet) ----------
-let map = null, markerLayer = null, selected = null, sidoData = [], layerKey = "temp";
+let map = null, markerLayer = null, selected = null, sidoData = [];
 
 function markerIcon(r, isSel) {
-  let text, color;
-  if (layerKey === "temp") {
-    text = r.temp == null ? "-" : `${Math.round(r.temp)}°`;
-    color = r.temp == null ? GRAY : r.temp <= 0 ? "#2f80ed" : r.temp < 15 ? "#56ccf2" : r.temp < 25 ? "#27ae60" : r.temp < 30 ? "#f2994a" : "#eb5757";
-  } else {
-    const v = r[layerKey];
-    text = v == null ? "-" : Math.round(v);
-    color = GRADE_COLOR[grade(layerKey, v)] || GRAY;
-  }
-  const s = isSel ? 46 : 38;
+  const chip = (v, k) => {
+    const c = GRADE_COLOR[grade(k, v)] || GRAY;
+    return `<span style="background:${c};color:#fff;border-radius:4px;padding:0 4px;min-width:20px;text-align:center">${v == null ? "-" : Math.round(v)}</span>`;
+  };
+  const t = r.temp == null ? "-" : `${Math.round(r.temp)}°`;
   return L.divIcon({
-    className: "", iconSize: [s, s], iconAnchor: [s / 2, s / 2],
-    html: `<div style="width:${s}px;height:${s}px;border-radius:50%;background:${color};color:#fff;display:flex;` +
-      `align-items:center;justify-content:center;font:bold 13px sans-serif;` +
-      `border:${isSel ? "3px solid #222" : "2px solid #fff"};box-shadow:0 1px 4px rgba(0,0,0,.45)">${text}</div>`,
+    className: "", iconSize: [64, 44], iconAnchor: [32, 22],
+    html: `<div style="width:64px;height:44px;border-radius:10px;background:#fff;color:#1b2a49;display:flex;flex-direction:column;` +
+      `align-items:center;justify-content:center;gap:2px;font:bold 11px sans-serif;box-shadow:0 1px 5px rgba(0,0,0,.45);` +
+      `border:${isSel ? "3px solid #1b2a49" : "1px solid #ccc"}">` +
+      `<div style="font-size:15px;line-height:1">${t}</div>` +
+      `<div style="display:flex;gap:3px">${chip(r.pm10, "pm10")}${chip(r.pm25, "pm25")}</div></div>`,
   });
 }
 
@@ -292,7 +289,7 @@ function drawMarkers() {
   for (const r of sidoData) {
     L.marker([r.lat, r.lon], { icon: markerIcon(r, r.name === selected) })
       .on("click", (e) => { L.DomEvent.stopPropagation(e); load({ name: r.name, lat: r.lat, lon: r.lon }); })
-      .bindTooltip(`${r.name} · ${r.temp == null ? "-" : Math.round(r.temp) + "°C"}`)
+      .bindTooltip(`${r.name} · ${r.temp == null ? "-" : Math.round(r.temp) + "°C"} · PM10 ${r.pm10 == null ? "-" : Math.round(r.pm10)} · PM2.5 ${r.pm25 == null ? "-" : Math.round(r.pm25)}`)
       .addTo(markerLayer);
   }
 }
@@ -330,13 +327,5 @@ function initMap() {
   loadSido().catch(() => setStatus("⚠️ 전국 지도 데이터를 불러오지 못했습니다"));
   setInterval(() => loadSido().catch(() => {}), REFRESH_MS);
 }
-
-$("layer-toggle").addEventListener("click", (e) => {
-  const k = e.target.dataset?.k;
-  if (!k) return;
-  layerKey = k;
-  document.querySelectorAll("#layer-toggle button").forEach((b) => b.classList.toggle("on", b.dataset.k === k));
-  drawMarkers();
-});
 
 initMap();
